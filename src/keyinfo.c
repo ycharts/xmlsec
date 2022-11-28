@@ -1056,7 +1056,7 @@ xmlSecKeyDataRetrievalMethodXmlRead(xmlSecKeyDataId id, xmlSecKeyPtr key, xmlNod
                 "retrieval type is unknown");
             goto done;
         }
-
+        
         res = 0;
         goto done;
     }
