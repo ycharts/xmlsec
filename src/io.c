@@ -346,7 +346,7 @@ xmlSecIOFileOpen(char const* filename) {
         }
         xmlFree(wpath);
     }
-#elif defined(XMLSEC_WINDOWS)
+#elif defined(XMLSEC_WINDOWS)  
     {
         errno_t err;
         err = fopen_s(&fd, filename, "rb");
