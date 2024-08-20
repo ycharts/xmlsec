@@ -1,0 +1,80 @@
+---
+name: YCharts Patch and Tag
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - xmlsec-1_2_x
+
+env:
+  GIT_EMAIL: systems@ycharts.com
+  GIT_NAME: ychartsdeployer
+  PATCH_COMMIT: bcb130ffe50086c5ebade24b9f4fcbfe91664417 # pragma: allowlist secret
+
+jobs:
+  sync_with_upstream:
+      runs-on: namespace-profile-ubuntu-2004-4vcpu-8gbram
+      steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+  
+      - name: Configure git
+        run: |
+          git config --global user.email ${{ env.GIT_EMAIL }}
+          git config --global user.name ${{ env.GIT_NAME }}
+          git fetch --tags --force origin
+  
+      - name: Fetch upstream changes and check for new tag - master
+        id: upstream-check-master
+        run: |
+          git reset --hard origin/master
+          git fetch --tags --force origin
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+  
+          if [ $(git tag -l "$LATEST_TAG-ycharts") ]; then
+              echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+              echo "tag_exists=false" >> $GITHUB_OUTPUT
+              echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+  
+      - name: Apply ycharts patch and create tag
+        if: steps.upstream-check-master.outputs.tag_exists == 'false'
+        run: |
+          git reset --hard ${{ steps.upstream-check-master.outputs.latest_tag }}
+          git cherry-pick ${{ env.PATCH_COMMIT }}
+          git tag ${{ steps.upstream-check-master.outputs.latest_tag }}-ycharts
+  
+      - name: Fetch upstream changes and check for new tag - 1.2.x
+        id: upstream-check-1_2_x
+        run: |
+          git reset --hard origin/xmlsec-1_2_x
+          git fetch --tags --force origin
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+  
+          if [ $(git tag -l "$LATEST_TAG-ycharts") ]; then
+              echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+              echo "tag_exists=false" >> $GITHUB_OUTPUT
+              echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+  
+      - name: Apply ycharts patch and create tag
+        if: steps.upstream-check-1_2_x.outputs.tag_exists == 'false'
+        run: |
+          git reset --hard ${{ steps.upstream-check-1_2_x.outputs.latest_tag }}
+          git cherry-pick ${{ env.PATCH_COMMIT }}
+          git tag ${{ steps.upstream-check-1_2_x.outputs.latest_tag }}-ycharts
+  
+      - name: Push YCharts patch and tag
+        run: |
+          git push origin master:master
+          git push origin xmlsec-1_2_x:xmlsec-1_2_x
+          git push origin --tags --force
+  
+      # - name: Send PagerDuty alert on failure
+      #   if: failure()
+      #   uses: miparnisari/action-pagerduty-alert@0.3.2
+      #   with:
+      #     pagerduty-integration-key: ${{ secrets.PAGERDUTY_YCHARTS_DEVOPS_LOW_PRIORITY_EVENTS_API_INTEGRATION_KEY }}
