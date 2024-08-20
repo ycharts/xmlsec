@@ -25,8 +25,8 @@ jobs:
           git config --global user.name ${{ env.GIT_NAME }}
           git fetch --tags --force origin
   
-      - name: Fetch upstream changes and check for new tag - master
-        id: upstream-check-master
+      - name: Check for new release tag - master
+        id: tag-check-master
         run: |
           git reset --hard origin/master
           git fetch --tags --force origin
@@ -40,14 +40,14 @@ jobs:
           fi
   
       - name: Apply ycharts patch and create tag
-        if: steps.upstream-check-master.outputs.tag_exists == 'false'
+        if: steps.tag-check-master.outputs.tag_exists == 'false'
         run: |
-          git reset --hard ${{ steps.upstream-check-master.outputs.latest_tag }}
+          git reset --hard ${{ steps.tag-check-master.outputs.latest_tag }}
           git cherry-pick ${{ env.PATCH_COMMIT }}
-          git tag ${{ steps.upstream-check-master.outputs.latest_tag }}-ycharts
+          git tag ${{ steps.tag-check-master.outputs.latest_tag }}-ycharts
   
-      - name: Fetch upstream changes and check for new tag - 1.2.x
-        id: upstream-check-1_2_x
+      - name: Check for new release tag - 1.2.x
+        id: tag-check-1_2_x
         run: |
           git reset --hard origin/xmlsec-1_2_x
           git fetch --tags --force origin
@@ -61,11 +61,11 @@ jobs:
           fi
   
       - name: Apply ycharts patch and create tag
-        if: steps.upstream-check-1_2_x.outputs.tag_exists == 'false'
+        if: steps.tag-check-1_2_x.outputs.tag_exists == 'false'
         run: |
-          git reset --hard ${{ steps.upstream-check-1_2_x.outputs.latest_tag }}
+          git reset --hard ${{ steps.tag-check-1_2_x.outputs.latest_tag }}
           git cherry-pick ${{ env.PATCH_COMMIT }}
-          git tag ${{ steps.upstream-check-1_2_x.outputs.latest_tag }}-ycharts
+          git tag ${{ steps.tag-check-1_2_x.outputs.latest_tag }}-ycharts
   
       - name: Push YCharts patch and tag
         run: |
