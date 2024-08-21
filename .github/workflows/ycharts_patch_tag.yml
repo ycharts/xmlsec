@@ -33,6 +33,9 @@ jobs:
           git checkout master
           git fetch --tags --force origin
           LATEST_TAG=$(git describe --tags --abbrev=0)
+
+          echo "DEBUG LATEST TAG"
+          echo $LATEST_TAG
   
           if [ $(git tag -l "$LATEST_TAG-ycharts") ] || [[ $LATEST_TAG == *"-ycharts" ]]; then
               echo "tag_exists=true" >> $GITHUB_OUTPUT
@@ -54,7 +57,10 @@ jobs:
           git checkout xmlsec-1_2_x
           git fetch --tags --force origin
           LATEST_TAG=$(git describe --tags --abbrev=0)
-  
+          
+          echo "DEBUG LATEST TAG"
+          echo $LATEST_TAG
+
           if [ $(git tag -l "$LATEST_TAG-ycharts") ] || [[ $LATEST_TAG == *"-ycharts" ]]; then
               echo "tag_exists=true" >> $GITHUB_OUTPUT
           else
