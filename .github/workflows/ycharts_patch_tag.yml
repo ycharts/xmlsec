@@ -28,7 +28,7 @@ jobs:
       - name: Check for new release tag - master
         id: tag-check-master
         run: |
-          git reset --hard origin/master
+          git checkout origin/master
           git fetch --tags --force origin
           LATEST_TAG=$(git describe --tags --abbrev=0)
   
