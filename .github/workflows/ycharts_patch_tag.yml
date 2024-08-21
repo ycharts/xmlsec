@@ -73,8 +73,8 @@ jobs:
           git push origin xmlsec-1_2_x:xmlsec-1_2_x
           git push origin --tags --force
   
-      - name: Send PagerDuty alert on failure
-        if: failure()
-        uses: miparnisari/action-pagerduty-alert@0.3.2
-        with:
-          pagerduty-integration-key: ${{ secrets.PAGERDUTY_YCHARTS_DEVOPS_LOW_PRIORITY_EVENTS_API_INTEGRATION_KEY }}
+      # - name: Send PagerDuty alert on failure
+      #   if: failure()
+      #   uses: miparnisari/action-pagerduty-alert@0.3.2
+      #   with:
+      #     pagerduty-integration-key: ${{ secrets.PAGERDUTY_YCHARTS_DEVOPS_LOW_PRIORITY_EVENTS_API_INTEGRATION_KEY }}
