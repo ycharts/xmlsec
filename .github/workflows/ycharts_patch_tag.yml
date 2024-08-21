@@ -55,7 +55,7 @@ jobs:
           git fetch --tags --force origin
           LATEST_TAG=$(git describe --tags --abbrev=0)
   
-          if [ $(git tag -l "$LATEST_TAG-ycharts") ]; then
+          if [ $(git tag -l "$LATEST_TAG-ycharts") ] || [[ $LATEST_TAG == *"-ycharts" ]]; then
               echo "tag_exists=true" >> $GITHUB_OUTPUT
           else
               echo "tag_exists=false" >> $GITHUB_OUTPUT
