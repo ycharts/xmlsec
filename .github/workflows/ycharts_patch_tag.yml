@@ -30,6 +30,10 @@ jobs:
         run: |
           git checkout master
           git fetch --tags --force origin
+          echo "DEBUG describe tags"
+          git describe --tags --abbrev=0
+          echo "DEBUG git tag -l"
+          git tag -l
           LATEST_TAG=$(git describe --tags --abbrev=0)
   
           if [ $(git tag -l "$LATEST_TAG-ycharts") ]; then
