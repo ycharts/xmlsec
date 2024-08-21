@@ -6,10 +6,12 @@
  * This is free software; see Copyright file in the source
  * distribution for preciese wording.
  *
- * Copyright (C) 2002-2016 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
+ * Copyright (C) 2002-2024 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
  */
 #ifndef __XMLSEC_ERRORS_H__
 #define __XMLSEC_ERRORS_H__
+
+#include <xmlsec/exports.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -345,6 +347,13 @@ extern "C" {
  */
 #define XMLSEC_ERRORS_R_CERT_HAS_EXPIRED                76
 
+ /**
+  * XMLSEC_ERRORS_R_CRL_VERIFY_FAILED:
+  *
+  * CRL verification failed.
+  */
+#define XMLSEC_ERRORS_R_CRL_VERIFY_FAILED               77
+
 /**
  * XMLSEC_ERRORS_R_DSIG_NO_REFERENCES:
  *
@@ -365,6 +374,13 @@ extern "C" {
  * Invalid assertion.
  */
 #define XMLSEC_ERRORS_R_ASSERTION                       100
+
+/**
+ * XMLSEC_ERRORS_R_CAST_IMPOSSIBLE:
+ *
+ * Impossible to cast from one type to another.
+ */
+#define XMLSEC_ERROR_R_CAST_IMPOSSIBLE                  101
 
 /**
  * XMLSEC_ERRORS_MAX_NUMBER:
@@ -419,14 +435,21 @@ XMLSEC_EXPORT const char*       xmlSecErrorsGetMsg              (xmlSecSize pos)
 
 
 
+#if !defined(__XMLSEC_FUNCTION__)
+
 /* __FUNCTION__ is defined for MSC compiler < MS VS .NET 2003 */
 #if defined(_MSC_VER) && (_MSC_VER >= 1300)
 #define __XMLSEC_FUNCTION__ __FUNCTION__
-#endif /* _MSC_VER */
+
+/* and for GCC too */
+#elif defined(__GNUC__)
+#define __XMLSEC_FUNCTION__ __func__
 
 /* fallback for __FUNCTION__ */
-#if !defined(__XMLSEC_FUNCTION__)
+#else
 #define __XMLSEC_FUNCTION__  ""
+#endif
+
 #endif /*!defined(__XMLSEC_FUNCTION__) */
 
 /**

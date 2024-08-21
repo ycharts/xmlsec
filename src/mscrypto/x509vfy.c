@@ -6,7 +6,7 @@
  * distribution for preciese wording.
  *
  * Copyright (C) 2003 Cordys R&D BV, All rights reserved.
- * Copyright (C) 2003-2016 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
+ * Copyright (C) 2002-2024 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
  */
 /**
  * SECTION:x509vfy
@@ -25,20 +25,21 @@
 #include <ctype.h>
 #include <errno.h>
 
-#include <libxml/tree.h>
-
 #include <xmlsec/xmlsec.h>
-#include <xmlsec/xmltree.h>
 #include <xmlsec/keys.h>
 #include <xmlsec/keyinfo.h>
 #include <xmlsec/keysmngr.h>
 #include <xmlsec/base64.h>
 #include <xmlsec/bn.h>
 #include <xmlsec/errors.h>
+#include <xmlsec/xmltree.h>
 
 #include <xmlsec/mscrypto/crypto.h>
 #include <xmlsec/mscrypto/x509.h>
+
 #include "private.h"
+#include "../cast_helpers.h"
+
 
 /**************************************************************************
  *
@@ -57,14 +58,9 @@ struct _xmlSecMSCryptoX509StoreCtx {
  *
  * xmlSecMSCryptoKeyDataStoreX509Id:
  *
- * xmlSecMSCryptoX509StoreCtx is located after xmlSecTransform
- *
  ***************************************************************************/
-#define xmlSecMSCryptoX509StoreGetCtx(store) \
-    ((xmlSecMSCryptoX509StoreCtxPtr)(((xmlSecByte*)(store)) + \
-                    sizeof(xmlSecKeyDataStoreKlass)))
-#define xmlSecMSCryptoX509StoreSize    \
-    (sizeof(xmlSecKeyDataStoreKlass) + sizeof(xmlSecMSCryptoX509StoreCtx))
+XMLSEC_KEY_DATA_STORE_DECLARE(MSCryptoX509Store, xmlSecMSCryptoX509StoreCtx)
+#define xmlSecMSCryptoX509StoreSize XMLSEC_KEY_DATA_STORE_SIZE(MSCryptoX509Store)
 
 static int         xmlSecMSCryptoX509StoreInitialize    (xmlSecKeyDataStorePtr store);
 static void        xmlSecMSCryptoX509StoreFinalize      (xmlSecKeyDataStorePtr store);
@@ -87,9 +83,8 @@ static xmlSecKeyDataStoreKlass xmlSecMSCryptoX509StoreKlass = {
 
 static PCCERT_CONTEXT xmlSecMSCryptoX509FindCert(HCERTSTORE store,
                          const xmlChar *subjectName,
-                         const xmlChar *issuerName,
-                         const xmlChar *issuerSerial,
-                         const xmlChar *ski);
+                         const xmlChar *issuerName, const xmlChar *issuerSerial,
+                         const xmlSecByte* ski, xmlSecSize skiSize);
 
 
 /**
@@ -122,23 +117,67 @@ PCCERT_CONTEXT
 xmlSecMSCryptoX509StoreFindCert(xmlSecKeyDataStorePtr store, xmlChar *subjectName,
                 xmlChar *issuerName, xmlChar *issuerSerial,
                 xmlChar *ski, xmlSecKeyInfoCtx* keyInfoCtx) {
+    if (ski != NULL) {
+        xmlSecSize skiDecodedSize = 0;
+        int ret;
+
+        /* our usual trick with base64 decode */
+        ret = xmlSecBase64DecodeInPlace(ski, &skiDecodedSize);
+        if (ret < 0) {
+            xmlSecInternalError2("xmlSecBase64DecodeInPlace", NULL,
+                "ski=%s", xmlSecErrorsSafeString(ski));
+            return(NULL);
+        }
+
+        return(xmlSecMSCryptoX509StoreFindCert_ex(store, subjectName, issuerName, issuerSerial,
+            (xmlSecByte*)ski, skiDecodedSize, keyInfoCtx));
+    }
+    else {
+        return(xmlSecMSCryptoX509StoreFindCert_ex(store, subjectName, issuerName, issuerSerial,
+            NULL, 0, keyInfoCtx));
+
+    }
+}
+
+/**
+ * xmlSecMSCryptoX509StoreFindCert_ex:
+ * @store:          the pointer to X509 key data store klass.
+ * @subjectName:    the desired certificate name.
+ * @issuerName:     the desired certificate issuer name.
+ * @issuerSerial:   the desired certificate issuer serial number.
+ * @ski:            the desired certificate SKI.
+ * @skiSize:        the desired certificate SKI size.
+ * @keyInfoCtx:     the pointer to <dsig:KeyInfo/> element processing context.
+ *
+ * Searches @store for a certificate that matches given criteria.
+ *
+ * Returns: pointer to found certificate or NULL if certificate is not found
+ * or an error occurs.
+ */
+PCCERT_CONTEXT
+xmlSecMSCryptoX509StoreFindCert_ex(xmlSecKeyDataStorePtr store, xmlChar* subjectName,
+                                   xmlChar* issuerName, xmlChar* issuerSerial,
+                                   xmlSecByte* ski, xmlSecSize skiSize,
+                                   xmlSecKeyInfoCtx* keyInfoCtx ATTRIBUTE_UNUSED) {
     xmlSecMSCryptoX509StoreCtxPtr ctx;
     PCCERT_CONTEXT pCert = NULL;
 
     xmlSecAssert2(xmlSecKeyDataStoreCheckId(store, xmlSecMSCryptoX509StoreId), NULL);
-    xmlSecAssert2(keyInfoCtx != NULL, NULL);
+    UNREFERENCED_PARAMETER(keyInfoCtx);
 
     ctx = xmlSecMSCryptoX509StoreGetCtx(store);
     xmlSecAssert2(ctx != NULL, NULL);
 
     /* search untrusted certs store */
-    if((ctx->untrusted != NULL) && (pCert == NULL)) {
-        pCert = xmlSecMSCryptoX509FindCert(ctx->untrusted, subjectName, issuerName, issuerSerial, ski);
+    if ((ctx->untrusted != NULL) && (pCert == NULL)) {
+        pCert = xmlSecMSCryptoX509FindCert(ctx->untrusted, subjectName,
+            issuerName, issuerSerial, ski, skiSize);
     }
 
     /* search untrusted certs store */
-    if((ctx->trusted != NULL) && (pCert == NULL)) {
-        pCert = xmlSecMSCryptoX509FindCert(ctx->trusted, subjectName, issuerName, issuerSerial, ski);
+    if ((ctx->trusted != NULL) && (pCert == NULL)) {
+        pCert = xmlSecMSCryptoX509FindCert(ctx->trusted, subjectName,
+            issuerName, issuerSerial, ski, skiSize);
     }
 
     return pCert;
@@ -153,12 +192,12 @@ xmlSecMSCryptoUnixTimeToFileTime(time_t t, LPFILETIME pft) {
     xmlSecAssert(pft != NULL);
 
 #if defined( __MINGW32__)
-    ll = Int32x32To64(t, 10000000) + 116444736000000000ULL;
+    ll = Int32x32To64(t, 10000000) + 116444736000000000LL;
 #else
     ll = Int32x32To64(t, 10000000) + 116444736000000000;
 #endif
-    pft->dwLowDateTime = (DWORD)ll;
-    pft->dwHighDateTime = ll >> 32;
+    pft->dwLowDateTime  = (DWORD)ll;
+    pft->dwHighDateTime = (DWORD)(ll >> 32);
 }
 
 static BOOL
@@ -196,53 +235,6 @@ xmlSecMSCryptoCheckRevocation(HCERTSTORE hStore, PCCERT_CONTEXT pCert) {
     return(TRUE);
 }
 
-static void
-xmlSecMSCryptoX509StoreCertError(xmlSecKeyDataStorePtr store, PCCERT_CONTEXT cert, DWORD flags) {
-    xmlChar * subject = NULL;
-
-    xmlSecAssert(xmlSecKeyDataStoreCheckId(store, xmlSecMSCryptoX509StoreId));
-    xmlSecAssert(cert != NULL);
-    xmlSecAssert(flags != 0);
-
-    /* get certs subject */
-    subject = xmlSecMSCryptoX509GetNameString(cert, CERT_NAME_RDN_TYPE, 0, NULL);
-    if(subject == NULL) {
-        xmlSecInternalError("xmlSecMSCryptoX509GetNameString", NULL);
-        return;
-    }
-
-    /* print error */
-    if (flags & CERT_STORE_SIGNATURE_FLAG) {
-        xmlSecOtherError2(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
-                          xmlSecKeyDataStoreGetName(store),
-                          "signature failed, subject=%s",
-                          xmlSecErrorsSafeString(subject));
-    } else if (flags & CERT_STORE_TIME_VALIDITY_FLAG) {
-        xmlSecOtherError2(XMLSEC_ERRORS_R_CERT_HAS_EXPIRED,
-                          xmlSecKeyDataStoreGetName(store),
-                          "subject=%s",
-                          xmlSecErrorsSafeString(subject));
-    } else if (flags & CERT_STORE_REVOCATION_FLAG) {
-        if (flags & CERT_STORE_NO_CRL_FLAG) {
-            xmlSecOtherError2(XMLSEC_ERRORS_R_CERT_REVOKED,
-                              xmlSecKeyDataStoreGetName(store),
-                              "no crl, subject=%s",
-                              xmlSecErrorsSafeString(subject));
-        } else {
-            xmlSecOtherError2(XMLSEC_ERRORS_R_CERT_REVOKED,
-                              xmlSecKeyDataStoreGetName(store),
-                              "subject=%s",
-                              xmlSecErrorsSafeString(subject));
-        }
-    } else {
-        xmlSecOtherError2(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
-                          xmlSecKeyDataStoreGetName(store),
-                          "subject=%s",
-                          xmlSecErrorsSafeString(subject));
-    }
-
-    xmlFree(subject);
-}
 
 /**
  * xmlSecBuildChainUsingWinapi:
@@ -321,6 +313,87 @@ end:
     return (rc);
 }
 
+
+
+/* this function does NOT check for time validity (see xmlSecMSCngVerifyCertTime)
+*  returns <0 if there is an error; 0 if verification failed and >0 if verification succeeded */
+static int
+xmlSecMSCryptoX509StoreVerifySubject(xmlSecKeyDataStorePtr store, PCCERT_CONTEXT cert, PCCERT_CONTEXT issuerCert) {
+    DWORD flags;
+    BOOL ret;
+
+    xmlSecAssert2(xmlSecKeyDataStoreCheckId(store, xmlSecMSCryptoX509StoreId), -1);
+    xmlSecAssert2(cert != NULL, -1);
+    xmlSecAssert2(issuerCert != NULL, -1);
+
+    flags = CERT_STORE_REVOCATION_FLAG | CERT_STORE_SIGNATURE_FLAG;
+    ret = CertVerifySubjectCertificateContext(cert, issuerCert, &flags);
+    if (!ret) {
+        xmlSecMSCryptoError("CertVerifySubjectCertificateContext", NULL);
+        return(-1);
+    }
+
+    /* parse returned flags: https://learn.microsoft.com/en-us/previous-versions/windows/embedded/ms883939(v=msdn.10) */
+    if ((flags & CERT_STORE_SIGNATURE_FLAG) != 0) {
+        xmlSecOtherError(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
+            xmlSecKeyDataStoreGetName(store),
+            "CertVerifySubjectCertificateContext: CERT_STORE_SIGNATURE_FLAG");
+        return(0);
+    }
+    else if (((flags & CERT_STORE_REVOCATION_FLAG) != 0) && ((flags & CERT_STORE_NO_CRL_FLAG) == 0)) {
+        /* If CERT_STORE_REVOCATION_FLAG is enabled and the issuer does not have a CRL in the store,
+        then CERT_STORE_NO_CRL_FLAG is set in addition to CERT_STORE_REVOCATION_FLAG. */
+        xmlSecOtherError(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
+            xmlSecKeyDataStoreGetName(store),
+            "CertVerifySubjectCertificateContext: CERT_STORE_REVOCATION_FLAG");
+        return(0);
+    }
+
+    /* success */
+    return(1);
+}
+
+static int
+xmlSecMSCryptoX509StoreContainsCert(HCERTSTORE store, CERT_NAME_BLOB* name,
+    PCCERT_CONTEXT cert, xmlSecKeyDataStorePtr keyDataStore)
+{
+    PCCERT_CONTEXT storeCert = NULL;
+    int ret;
+
+    xmlSecAssert2(store != NULL, -1);
+    xmlSecAssert2(name != NULL, -1);
+    xmlSecAssert2(cert != NULL, -1);
+    xmlSecAssert2(keyDataStore != NULL, -1);
+
+    storeCert = CertFindCertificateInStore(store,
+        X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+        0,
+        CERT_FIND_SUBJECT_NAME,
+        name,
+        NULL);
+    if (storeCert == NULL) {
+        return (0);
+    }
+
+    ret = xmlSecMSCryptoX509StoreVerifySubject(keyDataStore, cert, storeCert);
+    if (ret < 0) {
+        xmlSecInternalError("xmlSecMSCryptoX509StoreVerifySubject", NULL);
+        CertFreeCertificateContext(storeCert);
+        return(-1);
+    } else if (ret == 0) {
+        xmlSecOtherError(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
+            NULL,
+            "xmlSecMSCryptoX509StoreVerifySubject");
+        CertFreeCertificateContext(storeCert);
+        return(-1);
+    }
+
+    /* success */
+    CertFreeCertificateContext(storeCert);
+    return(1);
+}
+
+
 /**
  * xmlSecMSCryptoBuildCertChainManually:
  * @cert: the certificate we check
@@ -339,57 +412,51 @@ xmlSecMSCryptoBuildCertChainManually (PCCERT_CONTEXT cert, LPFILETIME pfTime,
         HCERTSTORE store_trusted, HCERTSTORE store_untrusted, HCERTSTORE certs,
         xmlSecKeyDataStorePtr store) {
     PCCERT_CONTEXT issuerCert = NULL;
-    DWORD flags;
+    int ret;
 
+    /* check certificate validity and revokation */
     if (!xmlSecMSCryptoVerifyCertTime(cert, pfTime)) {
-        xmlSecMSCryptoX509StoreCertError(store, cert, CERT_STORE_TIME_VALIDITY_FLAG);
+        xmlSecOtherError(XMLSEC_ERRORS_R_CERT_HAS_EXPIRED,
+            xmlSecKeyDataStoreGetName(store),
+            "certificate expired");
         return(FALSE);
     }
 
     if (!xmlSecMSCryptoCheckRevocation(certs, cert)) {
+        xmlSecOtherError(XMLSEC_ERRORS_R_CRL_VERIFY_FAILED,
+            xmlSecKeyDataStoreGetName(store),
+            "certificate revoked");;
         return(FALSE);
     }
 
-    /*
-     * Try to find the cert in the trusted cert store. We will trust
-     * the certificate in the trusted store.
-     */
-    issuerCert = CertFindCertificateInStore(store_trusted,
-                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                0,
-                CERT_FIND_SUBJECT_NAME,
-                &(cert->pCertInfo->Subject),
-                NULL);
-    if( issuerCert != NULL) {
-        /* We have found the trusted cert, so return true */
-        /* todo: do we want to verify the trusted cert's revocation? we must, I think */
-        CertFreeCertificateContext( issuerCert ) ;
-        return( TRUE ) ;
-    }
-
-    /* Check whether the certificate is self signed certificate */
-    if(CertCompareCertificateName(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, &(cert->pCertInfo->Subject), &(cert->pCertInfo->Issuer))) {
+    /* does trustedStore contain cert directly? */
+    ret = xmlSecMSCryptoX509StoreContainsCert(store_trusted,
+        &(cert->pCertInfo->Subject), cert, store);
+    if (ret < 0) {
+        xmlSecInternalError("xmlSecMSCryptoX509StoreContainsCert", NULL);
         return(FALSE);
-    }
-
-    /* try to find issuer cert in the trusted cert in the store */
-    issuerCert = CertFindCertificateInStore(store_trusted,
-                X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                0,
-                CERT_FIND_SUBJECT_NAME,
-                &(cert->pCertInfo->Issuer),
-                NULL);
-    if(issuerCert != NULL) {
-        flags = CERT_STORE_REVOCATION_FLAG | CERT_STORE_SIGNATURE_FLAG;
-        if(!CertVerifySubjectCertificateContext(cert, issuerCert, &flags)) {
-            xmlSecMSCryptoX509StoreCertError(store, issuerCert, flags);
-            CertFreeCertificateContext(issuerCert);
-            return(FALSE);
-        }
-            /* todo: do we want to verify the trusted cert? we must check
-                 * revocation, I think */
-        CertFreeCertificateContext(issuerCert);
+    } else if (ret == 1) {
+        /* success */
         return(TRUE);
+    }
+
+    /* does trustedStore contain the issuer cert? */
+    ret = xmlSecMSCryptoX509StoreContainsCert(store_trusted,
+        &(cert->pCertInfo->Issuer), cert, store);
+    if (ret < 0) {
+        xmlSecInternalError("xmlSecMSCryptoX509StoreContainsCert", NULL);
+        return(FALSE);
+    } else if (ret == 1) {
+        /* success */
+        return(TRUE);
+    }
+
+    /* is cert self-signed? no recursion in that case */
+    if (CertCompareCertificateName(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+        &(cert->pCertInfo->Subject),
+        &(cert->pCertInfo->Issuer))) {
+        /* not verified */
+        return(FALSE);
     }
 
     /* try the untrusted certs in the chain */
@@ -400,17 +467,27 @@ xmlSecMSCryptoBuildCertChainManually (PCCERT_CONTEXT cert, LPFILETIME pfTime,
                 &(cert->pCertInfo->Issuer),
                 NULL);
     if(issuerCert != NULL) {
-        flags = CERT_STORE_REVOCATION_FLAG | CERT_STORE_SIGNATURE_FLAG;
-        if(!CertVerifySubjectCertificateContext(cert, issuerCert, &flags)) {
-            xmlSecMSCryptoX509StoreCertError(store, issuerCert, flags);
+        ret = xmlSecMSCryptoX509StoreVerifySubject(store, cert, issuerCert);
+        if (ret < 0) {
+            xmlSecInternalError("xmlSecMSCryptoX509StoreVerifySubject", NULL);
             CertFreeCertificateContext(issuerCert);
             return(FALSE);
         }
-        if(!xmlSecMSCryptoBuildCertChainManually(issuerCert, pfTime, store_trusted, store_untrusted, certs, store)) {
-            xmlSecMSCryptoX509StoreCertError(store, issuerCert, flags);
+        else if (ret == 0) {
+            xmlSecOtherError(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
+                NULL,
+                "xmlSecMSCryptoX509StoreVerifySubject");
             CertFreeCertificateContext(issuerCert);
             return(FALSE);
         }
+
+        if (!xmlSecMSCryptoBuildCertChainManually(issuerCert, pfTime, store_trusted, store_untrusted, certs, store)) {
+            xmlSecInternalError("xmlSecMSCryptoBuildCertChainManually", NULL);
+            CertFreeCertificateContext(issuerCert);
+            return(FALSE);
+        }
+
+        /* success */
         CertFreeCertificateContext(issuerCert);
         return(TRUE);
     }
@@ -423,20 +500,32 @@ xmlSecMSCryptoBuildCertChainManually (PCCERT_CONTEXT cert, LPFILETIME pfTime,
                 &(cert->pCertInfo->Issuer),
                 NULL);
     if(issuerCert != NULL) {
-        flags = CERT_STORE_REVOCATION_FLAG | CERT_STORE_SIGNATURE_FLAG;
-        if(!CertVerifySubjectCertificateContext(cert, issuerCert, &flags)) {
-            xmlSecMSCryptoX509StoreCertError(store, issuerCert, flags);
+        ret = xmlSecMSCryptoX509StoreVerifySubject(store, cert, issuerCert);
+        if (ret < 0) {
+            xmlSecInternalError("xmlSecMSCryptoX509StoreVerifySubject", NULL);
             CertFreeCertificateContext(issuerCert);
             return(FALSE);
         }
-        if(!xmlSecMSCryptoBuildCertChainManually(issuerCert, pfTime, store_trusted, store_untrusted, certs, store)) {
+        else if (ret == 0) {
+            xmlSecOtherError(XMLSEC_ERRORS_R_CERT_VERIFY_FAILED,
+                NULL,
+                "xmlSecMSCryptoX509StoreVerifySubject");
             CertFreeCertificateContext(issuerCert);
             return(FALSE);
         }
+
+        if (!xmlSecMSCryptoBuildCertChainManually(issuerCert, pfTime, store_trusted, store_untrusted, certs, store)) {
+            xmlSecInternalError("xmlSecMSCryptoBuildCertChainManually", NULL);
+            CertFreeCertificateContext(issuerCert);
+            return(FALSE);
+        }
+
+        /* success */
         CertFreeCertificateContext(issuerCert);
         return(TRUE);
     }
 
+    /* no luck */
     return(FALSE);
 }
 
@@ -460,26 +549,26 @@ xmlSecMSCryptoX509StoreConstructCertsChain(xmlSecKeyDataStorePtr store, PCCERT_C
     xmlSecAssert2(ctx->untrusted != NULL, FALSE);
 
     if(keyInfoCtx->certsVerificationTime > 0) {
-            /* convert the time to FILETIME */
+        /* convert the time to FILETIME */
         xmlSecMSCryptoUnixTimeToFileTime(keyInfoCtx->certsVerificationTime, &fTime);
     } else {
-            /* Defaults to current time */
-            GetSystemTimeAsFileTime(&fTime);
+        /* Defaults to current time */
+        GetSystemTimeAsFileTime(&fTime);
     }
 
     /* try the certificates in the keys manager */
     if(!res) {
         tempCert = CertEnumCertificatesInStore(ctx->trusted, NULL);
-            if(tempCert) {
-                    CertFreeCertificateContext(tempCert);
+        if(tempCert) {
+            CertFreeCertificateContext(tempCert);
             res = xmlSecMSCryptoBuildCertChainManually(cert, &fTime, ctx->trusted, ctx->untrusted, certs, store);
         }
     }
 
     /* try the certificates in the system */
     if(!res && !ctx->dont_use_system_trusted_certs) {
-                res = xmlSecBuildChainUsingWinapi(cert, &fTime, ctx->untrusted, certs);
-        }
+        res = xmlSecBuildChainUsingWinapi(cert, &fTime, ctx->untrusted, certs);
+    }
 
     /* done */
     return res;
@@ -529,7 +618,7 @@ xmlSecMSCryptoX509StoreVerify(xmlSecKeyDataStorePtr store, HCERTSTORE certs,
         }
 
         if(selected == 1) {
-	    if((keyInfoCtx->flags & XMLSEC_KEYINFO_FLAGS_X509DATA_DONT_VERIFY_CERTS) != 0
+        if((keyInfoCtx->flags & XMLSEC_KEYINFO_FLAGS_X509DATA_DONT_VERIFY_CERTS) != 0
                || xmlSecMSCryptoX509StoreConstructCertsChain(store, cert, certs, keyInfoCtx)) {
                 return(cert);
             }
@@ -567,9 +656,7 @@ xmlSecMSCryptoX509StoreAdoptCert(xmlSecKeyDataStorePtr store, PCCERT_CONTEXT pCe
     } else if(type == xmlSecKeyDataTypeNone) {
         certStore = ctx->untrusted;
     } else {
-        xmlSecInvalidIntegerTypeError("type", type,
-                "xmlSecKeyDataTypeTrusted, xmlSecKeyDataTypeNone",
-                xmlSecKeyDataStoreGetName(store));
+        xmlSecUnsupportedEnumValueError("key data type", type, xmlSecKeyDataStoreGetName(store));
         return(-1);
     }
 
@@ -980,6 +1067,7 @@ xmlSecMSCryptoX509FindCertByIssuer(HCERTSTORE store, const LPTSTR wcIssuer,
                                    xmlSecBnPtr issuerSerialBn, DWORD dwCertEncodingType) {
 
     PCCERT_CONTEXT res = NULL;
+    xmlSecSize size;
     CERT_INFO certInfo;
     BYTE* bdata;
     DWORD len;
@@ -989,9 +1077,10 @@ xmlSecMSCryptoX509FindCertByIssuer(HCERTSTORE store, const LPTSTR wcIssuer,
     xmlSecAssert2(wcIssuer != NULL, NULL);
     xmlSecAssert2(issuerSerialBn != NULL, NULL);
 
-    certInfo.SerialNumber.cbData = xmlSecBnGetSize(issuerSerialBn);
     certInfo.SerialNumber.pbData = xmlSecBnGetData(issuerSerialBn);
 
+    size = xmlSecBnGetSize(issuerSerialBn);
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(size, certInfo.SerialNumber.cbData, return(NULL), NULL);
 
     /* CASE 1: UTF8, DN */
     if (NULL == res) {
@@ -1086,9 +1175,9 @@ xmlSecMSCryptoX509GetCertName(const xmlChar * name) {
 
     xmlSecAssert2(name != 0, NULL);
 
-    /* MSCrypto doesn't support "emailAddress" attribute (see NSS as well). 
+    /* MSCrypto doesn't support "emailAddress" attribute (see NSS as well).
      * This code is not bullet proof and may produce incorrect results if someone has
-     * "emailAddress=" string in one of the fields, but it is best I can suggest to fix 
+     * "emailAddress=" string in one of the fields, but it is best I can suggest to fix
      * this problem.
      */
     name2 = xmlStrdup(name);
@@ -1113,12 +1202,30 @@ xmlSecMSCryptoX509GetCertName(const xmlChar * name) {
     return(res);
 }
 
+
 static PCCERT_CONTEXT
-xmlSecMSCryptoX509FindCert(HCERTSTORE store,
-                const xmlChar *subjectName,
-                const xmlChar *issuerName,
-                const xmlChar *issuerSerial,
-                const xmlChar *ski) {
+xmlSecMSCryptoX509FindCertBySki(HCERTSTORE store, const xmlSecByte* ski, xmlSecSize skiSize) {
+    CRYPT_HASH_BLOB blob;
+
+    xmlSecAssert2(store != 0, NULL);
+    xmlSecAssert2(ski != NULL, NULL);
+    xmlSecAssert2(skiSize > 0, NULL);
+
+    blob.pbData = (xmlSecByte*)ski;
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(skiSize, blob.cbData, return(NULL), NULL);
+
+    return(CertFindCertificateInStore(store,
+        PKCS_7_ASN_ENCODING | X509_ASN_ENCODING,
+        0,
+        CERT_FIND_KEY_IDENTIFIER,
+        &blob,
+        NULL));
+}
+
+static PCCERT_CONTEXT
+xmlSecMSCryptoX509FindCert(HCERTSTORE store, const xmlChar *subjectName,
+                const xmlChar *issuerName, const xmlChar *issuerSerial,
+                const xmlSecByte* ski, xmlSecSize skiSize) {
     PCCERT_CONTEXT pCert = NULL;
     int ret;
 
@@ -1193,34 +1300,8 @@ xmlSecMSCryptoX509FindCert(HCERTSTORE store,
         xmlSecBnFinalize(&issuerSerialBn);
     }
 
-    if((pCert == NULL) && (ski != NULL)) {
-        CRYPT_HASH_BLOB blob;
-        xmlChar* binSki;
-        int binSkiLen;
-
-        binSki = xmlStrdup(ski);
-        if(binSki == NULL) {
-            xmlSecStrdupError(ski, NULL);
-            return (NULL);
-        }
-
-        /* trick: base64 decode "in place" */
-        binSkiLen = xmlSecBase64Decode(binSki, (xmlSecByte*)binSki, xmlStrlen(binSki));
-        if(binSkiLen < 0) {
-            xmlSecInternalError("xmlSecBase64Decode", NULL);
-            xmlFree(binSki);
-            return(NULL);
-        }
-
-        blob.pbData = binSki;
-        blob.cbData = binSkiLen;
-        pCert = CertFindCertificateInStore(store,
-                        PKCS_7_ASN_ENCODING | X509_ASN_ENCODING,
-                        0,
-                        CERT_FIND_KEY_IDENTIFIER,
-                        &blob,
-                        NULL);
-        xmlFree(binSki);
+    if((pCert == NULL) && (ski != NULL) && (skiSize > 0)) {
+        pCert = xmlSecMSCryptoX509FindCertBySki(store, ski, skiSize);
     }
 
     return(pCert);

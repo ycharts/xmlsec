@@ -34,6 +34,8 @@
 #include <xmlsec/mscng/certkeys.h>
 #include <xmlsec/mscng/keysstore.h>
 
+#include "../cast_helpers.h"
+
 /* config info for the mscng keysstore */
 static LPTSTR gXmlSecMSCngAppCertStoreName = NULL;
 
@@ -146,7 +148,7 @@ xmlSecMSCngAppKeyLoad(const char *filename, xmlSecKeyDataFormat format,
         ret = xmlSecBufferReadFile(&buffer, filename);
         if(ret < 0) {
             xmlSecInternalError2("xmlSecBufferReadFile", NULL,
-                                 "filename=%s", xmlSecErrorsSafeString(filename));
+                "filename=%s", xmlSecErrorsSafeString(filename));
             xmlSecBufferFinalize(&buffer);
             return (NULL);
         }
@@ -162,8 +164,8 @@ xmlSecMSCngAppKeyLoad(const char *filename, xmlSecKeyDataFormat format,
         xmlSecBufferFinalize(&buffer);
         break;
     default:
-        xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL, "format=%d",
-            (int)format);
+        xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
+            "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
         return(NULL);
         break;
     }
@@ -188,11 +190,13 @@ xmlSecKeyPtr
 xmlSecMSCngAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlSecKeyDataFormat format,
                             const char *pwd, void* pwdCallback, void* pwdCallbackCtx) {
     PCCERT_CONTEXT pCert = NULL;
-    PCCERT_CONTEXT tmpcert = NULL;
+    PCCERT_CONTEXT pCertChain = NULL;
+    PCCERT_CONTEXT pKeyCert = NULL;
     xmlSecKeyDataPtr x509Data = NULL;
     xmlSecKeyDataPtr keyData = NULL;
     xmlSecKeyPtr key = NULL;
     xmlSecKeyPtr res = NULL;
+    DWORD dwDataSize;
     int ret;
 
     xmlSecAssert2(data != NULL, NULL);
@@ -202,41 +206,27 @@ xmlSecMSCngAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlSecK
     UNREFERENCED_PARAMETER(pwdCallback);
     UNREFERENCED_PARAMETER(pwdCallbackCtx);
 
-    pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dataSize);
+    /* read cert and make a copy for cert chain and keyCert */
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, dwDataSize, goto done, NULL);
+    pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dwDataSize);
     if(pCert == NULL) {
         xmlSecMSCngLastError("CertCreateCertificateContext", NULL);
         goto done;
     }
 
-    x509Data = xmlSecKeyDataCreate(xmlSecMSCngKeyDataX509Id);
-    if(x509Data == NULL) {
-        xmlSecInternalError("xmlSecKeyDataCreate", NULL);
+    pCertChain = CertDuplicateCertificateContext(pCert);
+    if(pCertChain == NULL) {
+        xmlSecMSCngLastError("CertDuplicateCertificateContext", NULL);
         goto done;
     }
 
-    tmpcert = CertDuplicateCertificateContext(pCert);
-    if(tmpcert == NULL) {
-        xmlSecMSCngLastError("CertDuplicateCertificateContext",
-            xmlSecKeyDataGetName(x509Data));
+    pKeyCert = CertDuplicateCertificateContext(pCert);
+    if(pKeyCert == NULL) {
+        xmlSecMSCngLastError("CertDuplicateCertificateContext", NULL);
         goto done;
     }
 
-    ret = xmlSecMSCngKeyDataX509AdoptKeyCert(x509Data, tmpcert);
-    if(ret < 0) {
-        xmlSecInternalError("xmlSecMSCngKeyDataX509AdoptKeyCert",
-            xmlSecKeyDataGetName(x509Data));
-        goto done;
-    }
-    tmpcert = NULL;
-
-    keyData = xmlSecMSCngCertAdopt(pCert, xmlSecKeyDataTypePublic);
-    if(keyData == NULL) {
-        xmlSecInternalError("xmlSecMSCngCertAdopt",
-            xmlSecKeyDataGetName(x509Data));
-        goto done;
-    }
-    pCert = NULL;
-
+    /* create key */
     key = xmlSecKeyCreate();
     if(key == NULL) {
         xmlSecInternalError("xmlSecKeyCreate",
@@ -244,18 +234,44 @@ xmlSecMSCngAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlSecK
         goto done;
     }
 
+    keyData = xmlSecMSCngCertAdopt(pCert, xmlSecKeyDataTypePublic);
+    if(keyData == NULL) {
+        xmlSecInternalError("xmlSecMSCngCertAdopt", NULL);
+        goto done;
+    }
+    pCert = NULL;  /* owned by keyData now */
+
     ret = xmlSecKeySetValue(key, keyData);
     if(ret < 0) {
-        xmlSecInternalError("xmlSecKeySetValue",
-            xmlSecKeyDataGetName(x509Data));
+        xmlSecInternalError("xmlSecKeySetValue", NULL);
         goto done;
     }
     keyData = NULL;
 
+   /* add cert and keyCert to x509 data and add it to the key */
+    x509Data = xmlSecKeyDataCreate(xmlSecMSCngKeyDataX509Id);
+    if(x509Data == NULL) {
+        xmlSecInternalError("xmlSecKeyDataCreate", NULL);
+        goto done;
+    }
+
+    ret = xmlSecMSCngKeyDataX509AdoptKeyCert(x509Data, pKeyCert);
+    if(ret < 0) {
+        xmlSecInternalError("xmlSecMSCngKeyDataX509AdoptKeyCert", NULL);
+        goto done;
+    }
+    pKeyCert = NULL; /* owned by x509Data data now */
+
+    ret = xmlSecMSCngKeyDataX509AdoptCert(x509Data, pCertChain);
+    if(ret < 0) {
+        xmlSecInternalError("xmlSecMSCngKeyDataX509AdoptCert", NULL);
+        goto done;
+    }
+    pCertChain = NULL; /* owned by x509Data data now */
+
     ret = xmlSecKeyAdoptData(key, x509Data);
     if(ret < 0) {
-        xmlSecInternalError("xmlSecKeyAdoptData",
-            xmlSecKeyDataGetName(x509Data));
+        xmlSecInternalError("xmlSecKeyAdoptData", NULL);
         goto done;
     }
     x509Data = NULL;
@@ -263,12 +279,16 @@ xmlSecMSCngAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlSecK
     /* success */
     res = key;
     key = NULL;
+
 done:
     if(pCert != NULL) {
         CertFreeCertificateContext(pCert);
     }
-    if(tmpcert != NULL) {
-        CertFreeCertificateContext(tmpcert);
+    if(pCertChain != NULL) {
+        CertFreeCertificateContext(pCertChain);
+    }
+    if(pKeyCert != NULL) {
+        CertFreeCertificateContext(pKeyCert);
     }
     if(x509Data != NULL) {
         xmlSecKeyDataDestroy(x509Data);
@@ -428,7 +448,8 @@ xmlSecMSCngAppPkcs12LoadMemory(const xmlSecByte* data, xmlSecSize dataSize, cons
 
     memset(&pfx, 0, sizeof(pfx));
     pfx.pbData = (BYTE *)data;
-    pfx.cbData = dataSize;
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, pfx.cbData, return(NULL), NULL);
+
     ret = PFXIsPFXBlob(&pfx);
     if(ret == FALSE) {
         xmlSecMSCngLastError("PFXIsPFXBlob", NULL);
@@ -466,7 +487,7 @@ xmlSecMSCngAppPkcs12LoadMemory(const xmlSecByte* data, xmlSecSize dataSize, cons
     /* enumerate over certifiates in the store */
     while((cert = CertEnumCertificatesInStore(certStore, cert)) != NULL) {
         DWORD dwData = 0;
-        DWORD dwDataLen = sizeof(DWORD);
+        DWORD dwDataLen = sizeof(dwData);
 
         ret = CertGetCertificateContextProperty(cert, CERT_KEY_SPEC_PROP_ID,
             &dwData, &dwDataLen);
@@ -504,8 +525,7 @@ xmlSecMSCngAppPkcs12LoadMemory(const xmlSecByte* data, xmlSecSize dataSize, cons
 
     /* at this point we should have a private key */
     if(privKeyData == NULL) {
-        xmlSecInternalError2("xmlSecMSCngAppPkcs12LoadMemory",
-            xmlSecKeyDataGetName(keyData), "privKeyData is NULL", NULL);
+        xmlSecInternalError("privKeyData is NULL", NULL);
         goto cleanup;
     }
 
@@ -622,6 +642,7 @@ xmlSecMSCngAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte* d
                                      xmlSecKeyDataType type) {
     xmlSecKeyDataStorePtr x509Store;
     PCCERT_CONTEXT pCert = NULL;
+    DWORD dwDataSize;
     int ret;
 
     xmlSecAssert2(mngr != NULL, -1);
@@ -634,12 +655,14 @@ xmlSecMSCngAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte* d
         return(-1);
     }
 
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize,dwDataSize, return(-1), NULL);
+
     switch (format) {
         case xmlSecKeyDataFormatDer:
             pCert = CertCreateCertificateContext(
                 X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
                 data,
-                dataSize);
+                dwDataSize);
             if(pCert == NULL) {
                 xmlSecMSCngLastError("CertCreateCertificateContext", NULL)
                 return(-1);
@@ -647,9 +670,8 @@ xmlSecMSCngAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte* d
             break;
         default:
             xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
-                              "format=%d", (int)format);
+                "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
             return(-1);
-            break;
     }
 
     xmlSecAssert2(pCert != NULL, -1);

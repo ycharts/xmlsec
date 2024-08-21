@@ -6,7 +6,7 @@
  * distribution for preciese wording.
  *
  * Copyright (C) 2003 Cordys R&D BV, All rights reserved.
- * Copyright (C) 2003-2016 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
+ * Copyright (C) 2002-2024 Aleksey Sanin <aleksey@aleksey.com>. All Rights Reserved.
  */
 /**
  * SECTION:app
@@ -34,11 +34,13 @@
 #include <xmlsec/mscrypto/certkeys.h>
 #include <xmlsec/mscrypto/keysstore.h>
 #include <xmlsec/mscrypto/x509.h>
+
+#include "../cast_helpers.h"
 #include "private.h"
 
 #ifndef PKCS12_NO_PERSIST_KEY
 /* Windows Server 2003 and Windows XP:  This value is not supported. */
-#  define PKCS12_NO_PERSIST_KEY	0x00008000
+#  define PKCS12_NO_PERSIST_KEY    0x00008000
 #endif
 
 /* I don't see any other way then to use a global var to get the
@@ -176,7 +178,7 @@ xmlSecMSCryptoAppKeyLoad(const char *filename, xmlSecKeyDataFormat format,
     default:
         /* Any other format like PEM keys is currently not supported */
         xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
-                         "format=%d", (int)format);
+            "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
         return(NULL);
     }
 
@@ -205,6 +207,7 @@ xmlSecMSCryptoAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlS
     xmlSecKeyDataPtr keyData = NULL;
     xmlSecKeyPtr key = NULL;
     xmlSecKeyPtr res = NULL;
+    DWORD dwDataSize;
     int ret;
 
     xmlSecAssert2(data != NULL, NULL);
@@ -214,7 +217,8 @@ xmlSecMSCryptoAppKeyLoadMemory(const xmlSecByte* data, xmlSecSize dataSize, xmlS
     UNREFERENCED_PARAMETER(pwdCallback);
     UNREFERENCED_PARAMETER(pwdCallbackCtx);
 
-    pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dataSize);
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, dwDataSize, goto done, NULL);
+    pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dwDataSize);
     if (NULL == pCert) {
         xmlSecMSCryptoError("CertCreateCertificateContext", NULL);
         goto done;
@@ -363,8 +367,9 @@ xmlSecMSCryptoAppKeyCertLoad(xmlSecKeyPtr key, const char* filename,
 int
 xmlSecMSCryptoAppKeyCertLoadMemory(xmlSecKeyPtr key, const xmlSecByte* data, xmlSecSize dataSize,
                                    xmlSecKeyDataFormat format) {
-    PCCERT_CONTEXT pCert;
+    PCCERT_CONTEXT pCert, pKeyCert;
     xmlSecKeyDataPtr kdata;
+    DWORD dwDataSize;
     int ret;
 
     xmlSecAssert2(key != NULL, -1);
@@ -382,24 +387,44 @@ xmlSecMSCryptoAppKeyCertLoadMemory(xmlSecKeyPtr key, const xmlSecByte* data, xml
     switch(format) {
     case xmlSecKeyDataFormatDer:
     case xmlSecKeyDataFormatCertDer:
-        pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dataSize);
+        XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, dwDataSize, return(-1), NULL);
+
+        /* read cert and make a copy for key cert */
+        pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dwDataSize);
         if (NULL == pCert) {
-            xmlSecInternalError2("CertCreateCertificateContext", NULL,
-                                 "format=%d", format);
+            xmlSecInternalError2("CertCreateCertificateContext", xmlSecKeyDataGetName(kdata),
+                "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
             return(-1);
         }
-
-        ret = xmlSecMSCryptoKeyDataX509AdoptCert(kdata, pCert);
-        if(ret < 0) {
-            xmlSecInternalError("xmlSecMSCryptoKeyDataX509AdoptCert",
-                                xmlSecKeyDataGetName(kdata));
+        pKeyCert = CertDuplicateCertificateContext(pCert);
+        if(pKeyCert == NULL) {
+            xmlSecMSCryptoError("CertDuplicateCertificateContext", xmlSecKeyDataGetName(kdata));
             CertFreeCertificateContext(pCert);
             return(-1);
         }
+
+        /* add cert and key cert */
+        ret = xmlSecMSCryptoKeyDataX509AdoptCert(kdata, pCert);
+        if(ret < 0) {
+            xmlSecInternalError("xmlSecMSCryptoKeyDataX509AdoptCert", xmlSecKeyDataGetName(kdata));
+            CertFreeCertificateContext(pCert);
+            CertFreeCertificateContext(pKeyCert);
+            return(-1);
+        }
+        pCert = NULL; /* owned by kdata */
+
+        ret = xmlSecMSCryptoKeyDataX509AdoptKeyCert(kdata, pKeyCert);
+        if(ret < 0) {
+            xmlSecInternalError("xmlSecMSCryptoKeyDataX509AdoptKeyCert", xmlSecKeyDataGetName(kdata));
+            CertFreeCertificateContext(pKeyCert);
+            return(-1);
+        }
+        pKeyCert = NULL; /* owned by kdata */
+
         break;
     default:
-        xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
-                         "format=%d", (int)format);
+        xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, xmlSecKeyDataGetName(kdata),
+            "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
         return(-1);
     }
 
@@ -500,11 +525,10 @@ xmlSecMSCryptoAppPkcs12LoadMemory(const xmlSecByte* data,
 
     memset(&pfx, 0, sizeof(pfx));
     pfx.pbData = (BYTE *)data;
-    pfx.cbData = dataSize;
+    XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, pfx.cbData, return(NULL), NULL);
 
     if(FALSE == PFXIsPFXBlob(&pfx)) {
-        xmlSecMSCryptoError2("PFXIsPFXBlob", NULL,
-                             "size=%ld", (long int)pfx.cbData);
+        xmlSecMSCryptoError2("PFXIsPFXBlob", NULL, "size=%lu", pfx.cbData);
         goto done;
     }
 
@@ -540,8 +564,8 @@ xmlSecMSCryptoAppPkcs12LoadMemory(const xmlSecByte* data,
         if(pCert == NULL) {
             break;
         }
-        dwDataLen = sizeof(DWORD);
 
+        dwDataLen = sizeof(dwData);
         dwData = 0;
         /* Find the certificate that has the private key */
         if((TRUE == CertGetCertificateContextProperty(pCert, CERT_KEY_SPEC_PROP_ID, &dwData, &dwDataLen)) && (dwData > 0)) {
@@ -580,14 +604,14 @@ xmlSecMSCryptoAppPkcs12LoadMemory(const xmlSecByte* data,
         tmpcert = CertDuplicateCertificateContext(pCert);
         if(tmpcert == NULL) {
             xmlSecMSCryptoError("CertDuplicateCertificateContext",
-                                xmlSecKeyDataGetName(x509Data));
+                xmlSecKeyDataGetName(x509Data));
             goto done;
         }
 
         ret = xmlSecMSCryptoKeyDataX509AdoptCert(x509Data, tmpcert);
         if(ret < 0) {
             xmlSecInternalError("xmlSecMSCryptoKeyDataX509AdoptCert",
-                                 xmlSecKeyDataGetName(x509Data));
+                xmlSecKeyDataGetName(x509Data));
             goto done;
         }
         tmpcert = NULL;
@@ -595,23 +619,20 @@ xmlSecMSCryptoAppPkcs12LoadMemory(const xmlSecByte* data,
 
     if (keyData == NULL) {
         /* private key not found in PKCS12 file */
-        xmlSecInternalError2("xmlSecMSCryptoAppPkcs12Load",
-                            xmlSecKeyDataGetName(x509Data),
-                            "private key not found in PKCS12 file", NULL);
+        xmlSecInternalError2("xmlSecMSCryptoAppPkcs12Load", xmlSecKeyDataGetName(x509Data),
+            "private key not found in PKCS12 file, size = %lu", pfx.cbData);
         goto done;
     }
 
     key = xmlSecKeyCreate();
     if(key == NULL) {
-        xmlSecInternalError("xmlSecKeyCreate",
-                            xmlSecKeyDataGetName(x509Data));
+        xmlSecInternalError("xmlSecKeyCreate", xmlSecKeyDataGetName(x509Data));
         goto done;
     }
 
     ret = xmlSecKeySetValue(key, keyData);
     if(ret < 0) {
-        xmlSecInternalError("xmlSecKeySetValue",
-                            xmlSecKeyDataGetName(x509Data));
+        xmlSecInternalError("xmlSecKeySetValue", xmlSecKeyDataGetName(x509Data));
         xmlSecKeyDestroy(key);
         key = NULL;
         goto done;
@@ -620,8 +641,7 @@ xmlSecMSCryptoAppPkcs12LoadMemory(const xmlSecByte* data,
 
     ret = xmlSecKeyAdoptData(key, x509Data);
     if(ret < 0) {
-        xmlSecInternalError("xmlSecKeyAdoptData",
-                            xmlSecKeyDataGetName(x509Data));
+        xmlSecInternalError("xmlSecKeyAdoptData", xmlSecKeyDataGetName(x509Data));
         xmlSecKeyDestroy(key);
         key = NULL;
         goto done;
@@ -718,6 +738,7 @@ xmlSecMSCryptoAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte
                                         xmlSecKeyDataType type ATTRIBUTE_UNUSED) {
     xmlSecKeyDataStorePtr x509Store;
     PCCERT_CONTEXT pCert = NULL;
+    DWORD dwDataSize;
     int ret;
 
     xmlSecAssert2(mngr != NULL, -1);
@@ -734,8 +755,8 @@ xmlSecMSCryptoAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte
     switch (format) {
         case xmlSecKeyDataFormatDer:
         case xmlSecKeyDataFormatCertDer:
-            pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                                                 data, dataSize);
+            XMLSEC_SAFE_CAST_SIZE_TO_ULONG(dataSize, dwDataSize, return(-1), NULL);
+            pCert = CertCreateCertificateContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, data, dwDataSize);
             if (NULL == pCert) {
                 xmlSecMSCryptoError("CertCreateCertificateContext", NULL);
                 return (-1);
@@ -743,7 +764,7 @@ xmlSecMSCryptoAppKeysMngrCertLoadMemory(xmlSecKeysMngrPtr mngr, const xmlSecByte
             break;
         default:
             xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
-                             "format=%d", (int)format);
+                "format=" XMLSEC_ENUM_FMT, XMLSEC_ENUM_CAST(format));
             return(-1);
     }
 
