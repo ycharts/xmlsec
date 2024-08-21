@@ -1,10 +1,10 @@
-#!/bin/sh 
+#!/bin/sh
 
 if [ "z$TMPFOLDER" = "z" ] ; then
     TMPFOLDER=/tmp
 fi
 
-logfiles='$TMPFOLDER/test*.log'
+logfiles='$TMPFOLDER/xmlsec-test*/full.log'
 
 echo "-------------------- MEMORY USAGE --------------------"
 grep 'in use' $logfiles | \
@@ -17,4 +17,3 @@ grep 'ERROR SUMMARY' $logfiles | \
     sed 's/(suppressed: .*//' | \
     sort -u
 
- 
