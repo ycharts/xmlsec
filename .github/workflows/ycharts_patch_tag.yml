@@ -32,13 +32,9 @@ jobs:
         run: |
           git checkout master
           git fetch --tags --force origin
-          echo "DEBUG describe tags"
-          git describe --tags --abbrev=0
-          echo "DEBUG git tag -l"
-          git tag -l
           LATEST_TAG=$(git describe --tags --abbrev=0)
   
-          if [ $(git tag -l "$LATEST_TAG-ycharts") ]; then
+          if [ $(git tag -l "$LATEST_TAG-ycharts") ] || [[ $LATEST_TAG == *"-ycharts" ]]; then
               echo "tag_exists=true" >> $GITHUB_OUTPUT
           else
               echo "tag_exists=false" >> $GITHUB_OUTPUT
@@ -55,7 +51,7 @@ jobs:
       - name: Check for new release tag - 1.2.x
         id: tag-check-1_2_x
         run: |
-          git reset --hard origin/xmlsec-1_2_x
+          git checkout xmlsec-1_2_x
           git fetch --tags --force origin
           LATEST_TAG=$(git describe --tags --abbrev=0)
   
@@ -64,6 +60,7 @@ jobs:
           else
               echo "tag_exists=false" >> $GITHUB_OUTPUT
               echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+              echo $LATEST TAG
           fi
   
       - name: Apply ycharts patch and create tag
