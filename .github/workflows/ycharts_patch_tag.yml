@@ -14,7 +14,7 @@ env:
 
 jobs:
   sync_with_upstream:
-      runs-on: namespace-profile-ubuntu-2004-4vcpu-8gbram
+      runs-on: namespace-profile-ubuntu-2204-4vcpu-8gbram
       steps:
       - name: Checkout repo
         uses: actions/checkout@v4
