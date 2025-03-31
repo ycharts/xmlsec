@@ -17,7 +17,7 @@ jobs:
       runs-on: namespace-profile-ubuntu-2204-4vcpu-8gbram
       steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
   
@@ -78,6 +78,6 @@ jobs:
   
       - name: Send PagerDuty alert on failure
         if: failure()
-        uses: miparnisari/action-pagerduty-alert@0.3.2
+        uses: miparnisari/action-pagerduty-alert@ae4ae8342440da8ee12f7faa6a22ef89a9bd2243 # 1.0.4
         with:
           pagerduty-integration-key: ${{ secrets.PAGERDUTY_YCHARTS_DEVOPS_LOW_PRIORITY_EVENTS_API_INTEGRATION_KEY }}
