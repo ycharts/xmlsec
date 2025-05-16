@@ -78,6 +78,6 @@ jobs:
   
       - name: Send PagerDuty alert on failure
         if: failure()
-        uses: miparnisari/action-pagerduty-alert@ae4ae8342440da8ee12f7faa6a22ef89a9bd2243 # 1.0.4
+        uses: Entle/action-pagerduty-alert@ae4ae8342440da8ee12f7faa6a22ef89a9bd2243 # 1.0.4
         with:
           pagerduty-integration-key: ${{ secrets.PAGERDUTY_YCHARTS_DEVOPS_LOW_PRIORITY_EVENTS_API_INTEGRATION_KEY }}
